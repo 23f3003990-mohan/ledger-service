@@ -87,7 +87,11 @@ def execute(spec: dict):
         if metric == "avg":
             return (sum((r["_usd"] for r in rs), Decimal(0)) / len(rs)) if rs else Decimal(0)
         if metric == "distinct_customers":
-            return len({r["customer"] for r in rs})
+            mo = int(spec.get("min_orders") or 1)
+            counts = {}
+            for r in rs:
+                counts[r["customer"]] = counts.get(r["customer"], 0) + 1
+            return sum(1 for c in counts.values() if c >= mo)
 
     def fmt(v):
         return money(v) if isinstance(v, Decimal) else v
@@ -212,14 +216,29 @@ def rule_parse(q: str) -> dict:
     else:
         spec["metric"] = "sum"
 
-    grp = re.search(r"\b(customer|product|region)s?\b", ql)
-    sup = re.search(r"\b(" + SUPER + r")\b", ql)
+    th = re.search(r"\bat least (\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^.?]*?\b(?:paid |refunded |void )?(?:orders?|purchases?|refunds?)\b", ql)
+    mt = re.search(r"\b(?:more than|over|greater than)\s+(\d+|one|two|three|four|five)\b[^.?]*?\b(?:orders?|purchases?|refunds?)\b", ql)
+    NUMW = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+    if spec["metric"] in ("distinct_customers", "count") and re.search(r"customers?", ql) and (th or mt):
+        if th:
+            v = th.group(1); n = int(v) if v.isdigit() else NUMW[v]
+        else:
+            v = mt.group(1); n = (int(v) if v.isdigit() else NUMW[v]) + 1
+        if re.search(r"\bhow many (?:different |distinct |unique )?customers\b|\bnumber of (?:different |distinct |unique )?customers\b", ql):
+            spec["metric"] = "distinct_customers"
+            if n > 1:
+                spec["min_orders"] = n
+    ql_rank = re.sub(r"\bat (?:least|most)\b|\bleast one\b|\bnot least\b", " ", ql)
+    grp = re.search(r"\b(customer|product|region)s?\b", ql_rank)
+    sup = re.search(r"\b(" + SUPER + r")\b", ql_rank)
+    if spec["metric"] == "distinct_customers":
+        sup = None  # "how many customers..." is a count, never a ranking
     if grp and sup:
         g = grp.group(1)
         # a named entity of the same kind makes it a filter, not a ranking
         if g not in spec:
             spec["group_by"] = g
-            low = re.search(r"lowest|least|worst|smallest|fewest|bottom", ql)
+            low = re.search(r"lowest|least|worst|smallest|fewest|bottom", ql_rank)
             spec["order"] = "min" if low else "max"
             n = re.search(r"\b(?:top|bottom|best|worst)\s+(\d+|two|three|four|five|ten)\b", ql)
             if n:
@@ -245,6 +264,7 @@ SCHEMA = {
         "group_by": {"type": ["string", "null"], "enum": ["product", "customer", "region", None]},
         "order": {"type": ["string", "null"], "enum": ["max", "min", None]},
         "limit": {"type": ["integer", "null"]},
+        "min_orders": {"type": ["integer", "null"], "description": "for distinct_customers: only customers with at least this many matching orders"},
     },
     "required": ["metric", "status"],
 }
@@ -256,6 +276,7 @@ Semantics:
 - status: "paid" for revenue/sales/orders; "refunded" for anything about refunds; "void" for void/cancelled; "all" only if asked for all orders regardless of status.
 - Dates are inclusive calendar dates in YYYY-MM-DD. A month means its first to last day; a quarter or year likewise. If no year is given assume 2026. Leave null when the question has no date range.
 - Use region/product/customer only when the question restricts to one; spell them exactly as listed.
+- "How many customers placed at least N orders": metric distinct_customers with min_orders N. Words like "at least one" are NOT a ranking.
 - For 'which product/customer/region had the highest/lowest ...' set group_by, order (max/min) and limit (default 1); the metric says what is ranked.
 Return only the tool call."""
 
@@ -311,6 +332,8 @@ def clean_spec(s: dict):
             except ValueError:
                 return None
             out[key] = s[key]
+    if s.get("min_orders"):
+        out["min_orders"] = int(s["min_orders"])
     if s.get("group_by"):
         if s["group_by"] not in GROUPS:
             return None
