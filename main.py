@@ -203,7 +203,9 @@ def rule_parse(q: str) -> dict:
         spec["metric"] = "units"
     elif re.search(r"\baverage\b|\bavg\b|\bmean\b", ql):
         spec["metric"] = "avg"
-    elif countish and re.search(r"customers?", ql) and not re.search(r"orders|refunds", ql):
+    elif re.search(r"\b(distinct|unique|different|separate)\s+(?:\w+\s+)?customers?\b", ql) or re.search(
+            r"\b(how many|number of|count of|count)\s+(?:\w+\s+)?(?:(?:distinct|unique|different)\s+)?customers\b", ql) or re.search(
+            r"\bcustomers\s+(?:have|has|who|that|bought|purchased|ordered|placed|made)\b", ql) and countish:
         spec["metric"] = "distinct_customers"
     elif countish:
         spec["metric"] = "count"
